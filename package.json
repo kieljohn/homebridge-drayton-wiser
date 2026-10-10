@@ -16,6 +16,7 @@
   "repository": "github:stringbean/homebridge-drayton-wiser",
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test test/**/*.test.js",
     "prettier": "prettier --write .",
     "lint": "eslint .",
     "prepare": "npm run build"

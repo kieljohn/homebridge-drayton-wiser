@@ -7,4 +7,13 @@ module.exports = {
   rules: {
     'no-console': 'warn',
   },
+  overrides: [
+    {
+      files: ['test/**/*.js'],
+      rules: {
+        '@typescript-eslint/no-var-requires': 'off',
+        '@typescript-eslint/no-empty-function': 'off',
+      },
+    },
+  ],
 };
