@@ -1,4 +1,4 @@
-import { BaseAccessory } from './BaseAccessory';
+import { BaseAccessory, ServiceType } from './BaseAccessory';
 import { CharacteristicValue, Logger, PlatformAccessory } from 'homebridge';
 import {
   Device,
@@ -9,7 +9,17 @@ import {
 import { HAP } from 'homebridge/lib/api';
 import { BatteryLevel } from '@string-bean/drayton-wiser-client/dist/api/BatteryLevel';
 
+type ServiceWithBattery = {
+  Battery?: ServiceType;
+  BatteryService?: ServiceType;
+};
+
 export class WiserThermostatAccessory extends BaseAccessory {
+  private get batteryServiceType(): ServiceType {
+    const services = (this.hap.Service as unknown) as ServiceWithBattery;
+    return (services.Battery ?? services.BatteryService) as ServiceType;
+  }
+
   constructor(
     accessory: PlatformAccessory,
     hap: HAP,
@@ -79,8 +89,12 @@ export class WiserThermostatAccessory extends BaseAccessory {
     });
 
     if (device) {
+      const services = (hap.Service as unknown) as ServiceWithBattery;
+      const batteryService = (services.Battery ??
+        services.BatteryService) as ServiceType;
+
       this.registerCharacteristic({
-        serviceType: hap.Service.BatteryService,
+        serviceType: batteryService,
         characteristicType: Characteristic.BatteryLevel,
         getter: () => {
           if (this.device) {
@@ -92,7 +106,7 @@ export class WiserThermostatAccessory extends BaseAccessory {
       });
 
       this.registerCharacteristic({
-        serviceType: hap.Service.BatteryService,
+        serviceType: batteryService,
         characteristicType: Characteristic.StatusLowBattery,
         getter: () => this.device?.batteryLevel === BatteryLevel.Low,
       });
@@ -112,7 +126,7 @@ export class WiserThermostatAccessory extends BaseAccessory {
       this.updateCharacteristic({
         serviceType: this.hap.Service.Thermostat,
         characteristicType: this.hap.Characteristic.TargetTemperature,
-        value: room.temperature ? room.temperature : 0,
+        value: room.setTemperature ? room.setTemperature : 0,
       });
     }
 
@@ -137,13 +151,13 @@ export class WiserThermostatAccessory extends BaseAccessory {
     if (device) {
       if (this.device?.batteryLevel !== device.batteryLevel) {
         this.updateCharacteristic({
-          serviceType: this.hap.Service.BatteryService,
+          serviceType: this.batteryServiceType,
           characteristicType: this.hap.Characteristic.BatteryLevel,
           value: WiserThermostatAccessory.batteryLevel(device) ?? 0,
         });
 
         this.updateCharacteristic({
-          serviceType: this.hap.Service.BatteryService,
+          serviceType: this.batteryServiceType,
           characteristicType: this.hap.Characteristic.StatusLowBattery,
           value: device.batteryLevel === BatteryLevel.Low,
         });
@@ -164,7 +178,7 @@ export class WiserThermostatAccessory extends BaseAccessory {
       case this.hap.Characteristic.TargetHeatingCoolingState.HEAT:
         postUpdate = this.client.overrideRoomSetPoint(
           this.room.id,
-          this.room.setTemperature!,
+          this.room.setTemperature ?? 20,
         );
         break;
 

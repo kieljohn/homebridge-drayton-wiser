@@ -1,7 +1,7 @@
 import { API } from 'homebridge';
 import { WiserPlatformPlugin } from './WiserPlatformPlugin';
 
-export = (homebridge: API) => {
+export = (homebridge: API): void => {
   homebridge.registerPlatform(
     'homebridge-drayton-wiser',
     'drayton-wiser',

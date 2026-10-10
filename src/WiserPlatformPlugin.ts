@@ -10,10 +10,141 @@ import {
   Device,
   FullStatus,
   Room,
+  RoomMode,
   WiserClient,
 } from '@string-bean/drayton-wiser-client';
 import { WiserThermostatAccessory } from './WiserThermostatAccessory';
 import { WiserAwaySwitch } from './WiserAwaySwitch';
+import { ServiceType } from './BaseAccessory';
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const fetch = require('node-fetch');
+
+interface WiserClientInternal {
+  fixedAddress?: string;
+  discovery?: { discoverHub: () => Promise<string | null> };
+  secret: string;
+  request: (
+    endpoint: string,
+    method?: string,
+    body?: unknown,
+  ) => Promise<{ status: number; json?: unknown }>;
+  __patchedForResilience?: boolean;
+}
+
+interface RoomConstructor {
+  new (json: unknown): Room;
+  __patchedForManualMode?: boolean;
+}
+
+interface ApiRoomRaw {
+  SetpointOrigin?: string;
+}
+
+interface FetchErrorLike {
+  code?: string;
+  message?: string;
+  type?: string;
+}
+
+// Patch Room to support newer firmware SetpointOrigin.FromManualMode
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const roomModule = require('@string-bean/drayton-wiser-client/dist/Room');
+const OrigRoom = roomModule?.Room as RoomConstructor | undefined;
+if (OrigRoom && !OrigRoom.__patchedForManualMode) {
+  class PatchedRoom extends OrigRoom {
+    constructor(json: unknown) {
+      super(json);
+      const raw = json as ApiRoomRaw | undefined;
+      if (raw && raw.SetpointOrigin === 'FromManualMode') {
+        (this as { mode: RoomMode }).mode = this.setTemperature
+          ? RoomMode.Manual
+          : RoomMode.Off;
+      }
+    }
+  }
+  PatchedRoom.__patchedForManualMode = true;
+  roomModule.Room = PatchedRoom;
+}
+
+const DEFAULT_REQUEST_TIMEOUT = 10000; // 10s timeout instead of 2s
+
+// Enhance WiserClient.prototype.request to increase timeout, retry on transient drops, and preserve error causes
+const clientProto = (WiserClient.prototype as unknown) as WiserClientInternal;
+if (!clientProto.__patchedForResilience) {
+  clientProto.request = async function (
+    this: WiserClientInternal,
+    endpoint: string,
+    method = 'GET',
+    body?: unknown,
+  ) {
+    let address: string | null | undefined = this.fixedAddress;
+    if (!address && this.discovery) {
+      address = await this.discovery.discoverHub();
+    }
+    if (!address) {
+      throw new Error('system-not-found');
+    }
+
+    const headers: Record<string, string> = {
+      SECRET: this.secret,
+      Accept: 'application/json',
+    };
+
+    const args: {
+      headers: Record<string, string>;
+      method: string;
+      timeout: number;
+      body?: string;
+    } = {
+      headers,
+      method,
+      timeout: DEFAULT_REQUEST_TIMEOUT,
+    };
+
+    if (body) {
+      headers['Content-Type'] = 'application/json';
+      args.body = JSON.stringify(body);
+    }
+
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const response = await fetch(
+          `http://${address}/data/${endpoint}`,
+          args,
+        );
+        if (response.ok) {
+          const json = await response.json();
+          return { status: 200, json };
+        }
+        return { status: response.status };
+      } catch (err: unknown) {
+        const error = err as FetchErrorLike;
+        const isTransient =
+          error.code === 'ECONNRESET' ||
+          error.code === 'ETIMEDOUT' ||
+          error.type === 'request-timeout';
+
+        if (attempt < maxAttempts && isTransient) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          continue;
+        }
+
+        if (error.type === 'request-timeout') {
+          throw new Error(
+            `system-not-found: request to HeatHub timed out after ${DEFAULT_REQUEST_TIMEOUT}ms`,
+          );
+        }
+
+        const details = error.message || error.code || 'unexpected-error';
+        throw new Error(`unexpected-error: ${details}`);
+      }
+    }
+    throw new Error('unexpected-error');
+  };
+  clientProto.__patchedForResilience = true;
+}
 
 const POLL_INTERVAL = 60 * 1000;
 
@@ -201,7 +332,7 @@ export class WiserPlatformPlugin implements DynamicPlatformPlugin {
     );
 
     if (room.roomStatId) {
-      devices.push(
+      matched.push(
         ...devices.filter((device) => room.roomStatId === device.id),
       );
     }
@@ -254,7 +385,7 @@ export class WiserPlatformPlugin implements DynamicPlatformPlugin {
     }
 
     const thermostat = <WiserThermostatAccessory>this.thermostats.get(uuid);
-    thermostat.update(room);
+    thermostat.update(room, primaryDevice);
 
     return [accessory, newAccessory];
   }
@@ -283,10 +414,9 @@ export class WiserPlatformPlugin implements DynamicPlatformPlugin {
       .setCharacteristic(Characteristic.FirmwareRevision, firmwareVersion);
   }
 
-  // TODO wtf type should serviceType be?
   private static getOrCreateService(
     accessory: PlatformAccessory,
-    serviceType: any,
+    serviceType: ServiceType,
   ) {
     const service = accessory.getService(serviceType);
 
