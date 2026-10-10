@@ -414,17 +414,21 @@ export class WiserPlatformPlugin implements DynamicPlatformPlugin {
       .setCharacteristic(Characteristic.SerialNumber, serial)
       .setCharacteristic(Characteristic.FirmwareRevision, firmwareVersion);
   }
-
   private static getOrCreateService(
     accessory: PlatformAccessory,
     serviceType: ServiceType,
-  ) {
+  ): Service {
     const service = accessory.getService(serviceType);
 
     if (service) {
       return service;
     }
 
-    return accessory.addService((serviceType as unknown) as typeof Service);
+    const serviceInstance: Service =
+      typeof serviceType === 'function'
+        ? new ((serviceType as unknown) as { new (): Service })()
+        : ((serviceType as unknown) as Service);
+
+    return accessory.addService(serviceInstance);
   }
 }
