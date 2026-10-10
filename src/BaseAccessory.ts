@@ -10,10 +10,10 @@ import {
 } from 'homebridge';
 import { WiserClient } from '@string-bean/drayton-wiser-client';
 import { HAP } from 'homebridge/lib/api';
-import { CharacteristicProps } from 'hap-nodejs/dist/lib/Characteristic';
 
 export type CharacteristicType = WithUUID<{ new (): Characteristic }>;
 export type ServiceType = WithUUID<typeof Service>;
+export type CharacteristicPropsType = Parameters<Characteristic['setProps']>[0];
 
 export abstract class BaseAccessory {
   protected constructor(
@@ -30,7 +30,9 @@ export abstract class BaseAccessory {
       return service;
     }
 
-    return this.accessory.addService(serviceType);
+    return this.accessory.addService(
+      (serviceType as unknown) as typeof Service,
+    );
   }
 
   protected registerCharacteristic({
@@ -44,7 +46,7 @@ export abstract class BaseAccessory {
     characteristicType: CharacteristicType;
     getter?: () => CharacteristicValue | undefined;
     setter?: (value: CharacteristicValue) => Promise<void>;
-    props?: Partial<CharacteristicProps>;
+    props?: Partial<CharacteristicPropsType>;
   }): void {
     const service = this.getService(serviceType);
     const characteristic = service.getCharacteristic(characteristicType);
@@ -54,7 +56,7 @@ export abstract class BaseAccessory {
         try {
           callback(null, getter());
         } catch (error) {
-          callback(error);
+          callback(error as Error);
         }
       });
     }
@@ -68,7 +70,7 @@ export abstract class BaseAccessory {
               callback();
             })
             .catch((error) => {
-              callback(error);
+              callback(error as Error);
             });
         },
       );
