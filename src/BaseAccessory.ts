@@ -30,9 +30,12 @@ export abstract class BaseAccessory {
       return service;
     }
 
-    return this.accessory.addService(
-      (serviceType as unknown) as typeof Service,
-    );
+    const serviceInstance: Service =
+      typeof serviceType === 'function'
+        ? new ((serviceType as unknown) as { new (): Service })()
+        : ((serviceType as unknown) as Service);
+
+    return this.accessory.addService(serviceInstance);
   }
 
   protected registerCharacteristic({
