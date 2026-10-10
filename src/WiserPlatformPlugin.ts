@@ -4,6 +4,7 @@ import {
   Logger,
   PlatformAccessory,
   PlatformConfig,
+  Service,
 } from 'homebridge';
 import { Subscription, timer } from 'rxjs';
 import {
@@ -424,6 +425,6 @@ export class WiserPlatformPlugin implements DynamicPlatformPlugin {
       return service;
     }
 
-    return accessory.addService(serviceType);
+    return accessory.addService((serviceType as unknown) as typeof Service);
   }
 }
