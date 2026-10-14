@@ -104,7 +104,6 @@ test('WiserClient resilience: preserves underlying error details when requests f
       await client.fullStatus();
     },
     (err) => {
-      // Must contain informative error details rather than bare "unexpected-error"
       assert.ok(
         err.message.includes('ECONNREFUSED') ||
           err.message.includes('unexpected-error:'),
@@ -113,4 +112,54 @@ test('WiserClient resilience: preserves underlying error details when requests f
       return true;
     },
   );
+});
+
+test('FullStatus: extracts and exposes smartPlugs from raw json', () => {
+  require('../dist/WiserPlatformPlugin');
+  const { FullStatus } = require('@string-bean/drayton-wiser-client');
+
+  const rawPlug = {
+    id: 14,
+    Name: 'Pyro Server',
+    OutputState: 'Off',
+    TargetState: 'Off',
+    InstantaneousDemand: 45,
+    CurrentSummationDelivered: 12000,
+  };
+
+  const status = new FullStatus({
+    System: {},
+    Device: [],
+    Room: [],
+    Zigbee: {},
+    SmartPlug: [rawPlug],
+  });
+
+  assert.ok(Array.isArray(status.smartPlugs), 'smartPlugs should be an array');
+  assert.strictEqual(status.smartPlugs.length, 1);
+  assert.strictEqual(status.smartPlugs[0].id, 14);
+  assert.strictEqual(status.smartPlugs[0].InstantaneousDemand, 45);
+});
+
+test('WiserClient: setSmartPlugState sends correct PATCH payload', async () => {
+  require('../dist/WiserPlatformPlugin');
+  const { WiserClient } = require('@string-bean/drayton-wiser-client');
+
+  const client = WiserClient.clientWithAddress('dummy-secret', '127.0.0.1:80');
+
+  let calledEndpoint, calledMethod, calledBody;
+  client.request = async (endpoint, method, body) => {
+    calledEndpoint = endpoint;
+    calledMethod = method;
+    calledBody = body;
+    return { status: 200 };
+  };
+
+  await client.setSmartPlugState(14, true);
+  assert.strictEqual(calledEndpoint, 'domain/SmartPlug/14');
+  assert.strictEqual(calledMethod, 'PATCH');
+  assert.deepStrictEqual(calledBody, { RequestOutput: 'On' });
+
+  await client.setSmartPlugState(14, false);
+  assert.deepStrictEqual(calledBody, { RequestOutput: 'Off' });
 });

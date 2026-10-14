@@ -16,6 +16,10 @@ import {
 } from '@string-bean/drayton-wiser-client';
 import { WiserThermostatAccessory } from './WiserThermostatAccessory';
 import { WiserAwaySwitch } from './WiserAwaySwitch';
+import {
+  WiserSmartPlugAccessory,
+  SmartPlugData,
+} from './WiserSmartPlugAccessory';
 import { ServiceType } from './BaseAccessory';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -30,12 +34,21 @@ interface WiserClientInternal {
     method?: string,
     body?: unknown,
   ) => Promise<{ status: number; json?: unknown }>;
+  setSmartPlugState?: (
+    id: number,
+    state: boolean,
+  ) => Promise<{ status: number; json?: unknown }>;
   __patchedForResilience?: boolean;
 }
 
 interface RoomConstructor {
   new (json: unknown): Room;
   __patchedForManualMode?: boolean;
+}
+
+interface FullStatusConstructor {
+  new (json: unknown): FullStatus;
+  __patchedForSmartPlugs?: boolean;
 }
 
 interface ApiRoomRaw {
@@ -68,10 +81,40 @@ if (OrigRoom && !OrigRoom.__patchedForManualMode) {
   roomModule.Room = PatchedRoom;
 }
 
+// Patch FullStatus to expose SmartPlug array from HeatHub payload
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const fullStatusModule = require('@string-bean/drayton-wiser-client/dist/FullStatus');
+const OrigFullStatus = fullStatusModule?.FullStatus as
+  | FullStatusConstructor
+  | undefined;
+if (OrigFullStatus && !OrigFullStatus.__patchedForSmartPlugs) {
+  class PatchedFullStatus extends OrigFullStatus {
+    public smartPlugs: SmartPlugData[];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    constructor(json: any) {
+      super(json);
+      this.smartPlugs = json?.SmartPlug || [];
+    }
+  }
+  PatchedFullStatus.__patchedForSmartPlugs = true;
+  fullStatusModule.FullStatus = PatchedFullStatus;
+}
+
 const DEFAULT_REQUEST_TIMEOUT = 10000; // 10s timeout instead of 2s
 
-// Enhance WiserClient.prototype.request to increase timeout, retry on transient drops, and preserve error causes
+// Enhance WiserClient.prototype to increase timeout, retry on transient drops, and support SmartPlugs
 const clientProto = (WiserClient.prototype as unknown) as WiserClientInternal;
+if (!clientProto.setSmartPlugState) {
+  clientProto.setSmartPlugState = function (
+    this: WiserClientInternal,
+    id: number,
+    state: boolean,
+  ) {
+    return this.request(`domain/SmartPlug/${id}`, 'PATCH', {
+      RequestOutput: state ? 'On' : 'Off',
+    });
+  };
+}
 if (!clientProto.__patchedForResilience) {
   clientProto.request = async function (
     this: WiserClientInternal,
@@ -164,6 +207,7 @@ export class WiserPlatformPlugin implements DynamicPlatformPlugin {
     string,
     WiserThermostatAccessory
   > = new Map();
+  private readonly smartPlugs: Map<string, WiserSmartPlugAccessory> = new Map();
   private awaySwitch?: WiserAwaySwitch;
 
   constructor(
@@ -236,6 +280,7 @@ export class WiserPlatformPlugin implements DynamicPlatformPlugin {
 
     await this.updateAway(systemStatus, currentAccessories);
     await this.updateRooms(systemStatus, currentAccessories);
+    await this.updateSmartPlugs(systemStatus, currentAccessories);
 
     const staleAccessories = Array.from(this.accessories.values()).filter(
       (existing) =>
@@ -387,6 +432,83 @@ export class WiserPlatformPlugin implements DynamicPlatformPlugin {
 
     const thermostat = <WiserThermostatAccessory>this.thermostats.get(uuid);
     thermostat.update(room, primaryDevice);
+
+    return [accessory, newAccessory];
+  }
+
+  private async updateSmartPlugs(
+    status: FullStatus & { smartPlugs?: SmartPlugData[] },
+    currentAccessories: PlatformAccessory[],
+  ): Promise<void> {
+    const plugs: SmartPlugData[] = status.smartPlugs || [];
+    const devices: Device[] = status.devices;
+
+    const plugAccessories: [PlatformAccessory, boolean][] = plugs.map((plug) =>
+      this.createSmartPlug(
+        plug,
+        devices.find((d) => d.id === plug.id),
+      ),
+    );
+
+    const newAccessories = plugAccessories
+      .filter(([, isNew]) => isNew)
+      .map(([acc]) => acc);
+
+    if (newAccessories.length) {
+      this.api.registerPlatformAccessories(
+        'homebridge-drayton-wiser',
+        'drayton-wiser',
+        newAccessories,
+      );
+    }
+
+    currentAccessories.push(...plugAccessories.map(([acc]) => acc));
+  }
+
+  private createSmartPlug(
+    plug: SmartPlugData,
+    device?: Device,
+  ): [PlatformAccessory, boolean] {
+    const uuid = this.api.hap.uuid.generate(
+      `drayton-wiser:smartplug:${plug.id}`,
+    );
+    this.log.debug(`configuring smart plug ${plug.id} (${uuid})`);
+
+    let newAccessory = false;
+
+    if (!this.accessories.has(uuid)) {
+      this.accessories.set(
+        uuid,
+        new this.api.platformAccessory(plug.Name, uuid),
+      );
+      newAccessory = true;
+    }
+
+    const accessory = <PlatformAccessory>this.accessories.get(uuid);
+
+    this.updateAccessoryInformation({
+      accessory,
+      model: 'SmartPlug',
+      serial: device?.serialNumber ?? 'UNKNOWN',
+      firmwareVersion: device?.firmwareVersion ?? 'UNKNOWN',
+    });
+
+    if (!this.smartPlugs.has(uuid)) {
+      this.smartPlugs.set(
+        uuid,
+        new WiserSmartPlugAccessory(
+          accessory,
+          this.api.hap,
+          this.log,
+          <WiserClient>this.wiserClient,
+          plug,
+          device,
+        ),
+      );
+    }
+
+    const smartPlug = <WiserSmartPlugAccessory>this.smartPlugs.get(uuid);
+    smartPlug.update(plug, device);
 
     return [accessory, newAccessory];
   }
